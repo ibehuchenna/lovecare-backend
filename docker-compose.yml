@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    ports:
+      - "2000:2000"
+    environment:
+      - MONGO_URI=mongodb+srv://root:4liberty2024@learnnodejs.xrozhay.mongodb.net/?retryWrites=true&w=majority&appName=LearnNodejs
+      - JWT_SECRET=your_jwt_secret_htrgfeda
+    depends_on:
+      - mongo
+
+  mongo:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mongo-data:

@@ -1,7 +1,7 @@
 const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors');
-const KJUR = require('jsrsasign');
+const http = require('http');
 const jwt = require('jsonwebtoken');
 const rp = require('request-promise');
 const bodyParser = require('body-parser');
@@ -10,14 +10,15 @@ const authRoutes = require('./routes/authRoutes');
 const caretakerProfileRoutes = require('./routes/caretakerProfileRoutes');
 const careReceiverRoutes = require('./routes/careReceiverRoutes');
 const requestRoutes = require('./routes/requestRoutes');
-const http = require('http');
+const messageRoutes = require('./routes/messageRoutes');
+const Message = require('./models/Message');
 
-// env file configuration
 dotenv.config();
 connectDB();
 
 const app = express();
 const server = http.createServer(app);
+const io = require('socket.io')(server, { cors: { origin: "*" } });
 
 app.use(cors());
 app.use(bodyParser.json());
@@ -27,54 +28,114 @@ app.use('/api/auth', authRoutes);
 app.use('/api/caretaker-profiles', caretakerProfileRoutes);
 app.use('/api/care-receiver', careReceiverRoutes);
 app.use('/api/requests', requestRoutes);
+app.use('/api/messages', messageRoutes);
 
-// Video SDK API credentials
-const VIDEO_SDK_API_KEY = 'tOkpm3LKRCWWR7CdUPUGWg';
-const VIDEO_SDK_API_SECRET = 'B7vnzBlL7Gz5S03Gp2EuhlJJcCJqZgjswMWt';
-
-// Function to generate Video SDK token
-const generateVideoSDKToken = (sdkKey, sdkSecret, sessionName, role) => {
-  const iat = Math.round(new Date().getTime() / 1000) - 30;
-  const exp = iat + 60 * 60 * 2;
-  const oHeader = { alg: 'HS256', typ: 'JWT' };
-
-  const oPayload = {
-    app_key: sdkKey,
-    tpc: sessionName,
-    role_type: role,
-    version: 1,
-    iat,
-    exp
-  };
-
-  const sHeader = JSON.stringify(oHeader);
-  const sPayload = JSON.stringify(oPayload);
-  const sdkJWT = KJUR.jws.JWS.sign('HS256', sHeader, sPayload, sdkSecret);
-  return sdkJWT;
+const config = {
+  APIKey: process.env.APIKey,
+  APISecret: process.env.APISecret,
 };
 
-// Route to generate Video SDK token
-app.post('/generate-token', (req, res) => {
+const payload = {
+  iss: config.APIKey,
+  exp: new Date().getTime() + 5000,
+};
+
+// const token = jwt.sign(payload, config.APISecret);
+
+const token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhdWQiOm51bGwsImlzcyI6Ilk1WDh1MHZkVENhWDJ6WkltbzNBVVEiLCJleHAiOjE3MjEyMjQ2MjMsImlhdCI6MTcyMDYxOTgyNH0.pFcZ1GfYZQHQIfBy_FFsBUDjHxlOqvTLJ5GeeQMI7Xc";
+
+console.log({token});
+
+app.post('/api/meeting', (req, res) => {
+  const email = req.body.email;
+  const options = {
+    method: "POST",
+    uri: `https://api.zoom.us/v2/users/${email}/meetings`,
+    body: {
+      topic: "Meeting",
+      type: 1,
+      settings: {
+        host_video: true,
+        participant_video: true
+      },
+    },
+    auth: {
+      bearer: token,
+    },
+    headers: {
+      "User-Agent": "Zoom-api-Jwt-Request",
+      "content-type": "application/json",
+    },
+    json: true,
+  };
+
+  rp(options)
+    .then((response) => {
+      const dataRes = { join_url: response.join_url };
+      res.status(200).json(dataRes);
+    })
+    .catch((err) => {
+      console.error("API call failed, reason", err);
+      res.status(500).json({ message: "Zoom API call failed" });
+    });
+});
+
+
+app.post('/zoom/oauth/token', async (req, res) => {
+  const accountId = process.env.ZOOM_ACCOUNT_ID;
+  const secretKey = process.env.ZOOM_SECRET_KEY;
+  const clientId = process.env.ZOOM_CLIENT_ID;
+
+  const base64Encoded = Buffer.from(`${clientId}:${secretKey}`).toString('base64');
+
+  const data = qs.stringify({
+    'account_id': accountId,
+    'grant_type': 'account_credentials'
+  });
+
+  const config = {
+    method: 'post',
+    url: 'https://zoom.us/oauth/token',
+    headers: {
+      'Authorization': `Basic ${base64Encoded}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    data: data
+  };
+
   try {
-    const { role, sessionName } = req.body;
-
-    // Validate if role and sessionName are present
-    if (!role || !sessionName) {
-      return res.status(400).json({ message: 'Role and session name are required.' });
-    }
-
-    const signature = generateVideoSDKToken(
-      VIDEO_SDK_API_KEY,
-      VIDEO_SDK_API_SECRET,
-      sessionName,
-      role
-    );
-
-    res.status(200).json({ signature });
+    const response = await axios(config);
+    res.status(200).json(response.data);
   } catch (error) {
-    console.error('Error generating signature:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ error: error.message });
   }
+});
+
+
+io.on('connection', (socket) => {
+  console.log('New client connected');
+
+  socket.on('message', async (message) => {
+    try {
+      const newMessage = new Message({
+        text: message.text,
+        senderName: message.senderName,
+        senderId: message.senderId,
+        avatar: message.avatar,
+      });
+
+      await newMessage.save();
+      console.log("Message saved:", newMessage);
+
+      io.emit('message', newMessage);
+    } catch (err) {
+      console.error('Error saving message:', err);
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log('Client disconnected');
+  });
 });
 
 const PORT = process.env.PORT || 4000;
